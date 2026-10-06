@@ -1,24 +1,74 @@
-# DistrLab — distributed systems playground
+<div align="center">
 
-Break a live service architecture in your browser, then watch it recover.
+# DistrLab
 
-DistrLab simulates a small distributed system in real time: requests travel over
-links, fill queues, hit caches, get load-balanced, throttled, partitioned and
-timed out. You flip switches (single-flight, health checks, load-balancing
-strategy, queue limits, …) and watch latency, throughput, errors and queue depth
-react — then read the plain-language explanation of *why*.
+**Break a live distributed system — right in your browser.**
+
+Simulate cache stampedes, queue backpressure, rate limiting, load-balancing
+strategies, network partitions and replica lag in real time. Flip the switches,
+watch latency, throughput, errors and queue depth react — then read the
+plain-language explanation of *why*.
+
+[Try it live](https://distrlab.onrender.com) ·
+[Release v1.0.0](https://github.com/dsk-dev-ai/distrlab/releases/tag/v1.0.0) ·
+[Report a bug](https://github.com/dsk-dev-ai/distrlab/issues)
+
+![live](https://img.shields.io/website?url=https%3A%2F%2Fdistrlab.onrender.com&label=live%20on%20render&color=success)
+![release](https://img.shields.io/github/v/release/dsk-dev-ai/distrlab?label=release)
+![stars](https://img.shields.io/github/stars/dsk-dev-ai/distrlab?color=gold)
+![license](https://img.shields.io/github/license/dsk-dev-ai/distrlab)
+![svelte](https://img.shields.io/badge/Svelte_5-FF3E00?logo=svelte&logoColor=white)
+![typescript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
+![vite](https://img.shields.io/badge/Vite-646CFF?logo=vite&logoColor=white)
+
+**Status:** v1.0.0 — live on Render. 100% in the browser: no backend, no LLM,
+no paid API, no tracking. Everything runs inside a Web Worker on a static page —
+works offline, deployable to any static host.
+
+</div>
+
+## Why DistrLab?
+
+| Pain point | DistrLab solves it |
+|---|---|
+| Static diagrams that you just nod along to | A **live topology you can actually break** — every toggle moves real latency, error and throughput numbers |
+| Tutorials that only show the happy path | **Seven failure scenarios**: stampede, backpressure, throttling, LB skew, partition, stale replicas |
+| "I get it" fading an hour later | **Hands-on memory** — break it, watch it recover, then re-check yourself |
+| Trusting that health checks / least-inflight work | **See requests reroute around a dead instance in real time** |
+| Paid doorstopper simulators | Free, offline, no signup — a Svelte 5 + Canvas + Web Worker static page |
+
+## Contents
+
+- [A taste of the action](#a-taste-of-the-action)
+- [Scenarios](#scenarios)
+- [Controls](#controls)
+- [How the simulation works](#how-the-simulation-works)
+- [Development](#development)
+- [Deploy](#deploy)
+- [Roadmap](#roadmap)
+- [Support](#support)
+- [License](#license)
+
+## A taste of the action
+
+A healthy, idle playground — p95, throughput, capacity, queues and cache hit
+ratio all visible at a glance:
 
 ![healthy playground](media/distrlab-playground.png)
 
+Same cache expiry, **single-flight off**: every request herds at the origin and
+the catalog service melts down:
+
 ![cache stampede: expired cache without single-flight melts down the catalog service](media/distrlab-stampede.png)
+
+The same expiry with **single-flight on**: waiters coalesce at the cache and the
+catalog stays idle:
 
 ![the same expiry with single-flight on: waiters coalesce, the catalog stays idle](media/distrlab-coalesced.png)
 
-![Demo](media/distrlab-demo.gif)
+A real run, compressed — expire the cache, watch it recover:
 
-**Free-tier by design.** No backend, no LLM, no paid API, no tracking. Everything
-runs inside a Web Worker on a static page — works offline, deployable to any
-static host (Cloudflare Pages, GitHub Pages, Netlify…).
+![Demo](media/distrlab-demo.gif)
 
 ## Scenarios
 
@@ -42,8 +92,8 @@ static host (Cloudflare Pages, GitHub Pages, Netlify…).
 
 ## How the simulation works
 
-A discrete-time queueing model ticks every 20 ms of simulated time (player time is
-scaled 1×/2×/4×). Requests are small objects that carry latency, are counted
+A discrete-time queueing model ticks every 20 ms of simulated time (player time
+is scaled 1×/2×/4×). Requests are small objects that carry latency, are counted
 against windows, drain through queues, wait in `proc` slots for a service time
 drawn from a log-normal distribution, and eventually complete or fail with
 `timeout | rejected | throttled | conn | crashed`.
@@ -70,3 +120,40 @@ The engine is framework-agnostic (`src/sim/engine.ts`) and runs headless in a
 Web Worker (`src/sim/worker.ts`); the UI (`src/App.svelte`, `src/lib/`) is a
 thin canvas + Svelte skin over the snapshots it emits. Deploy `dist/` anywhere
 that serves static files — set the SPA fallback if your host needs it.
+
+## Deploy
+
+One free Render static site hosts the app — no backend to run:
+
+```yaml
+# render.yaml — already in this repo
+runtime: static
+buildCommand: npm install && npm run build
+publishPath: dist
+```
+
+Or push the button course: Render → **New → Blueprint** → connect this repo →
+**Deploy**. AutoDeploy is on, so every push to `main` rebuilds.
+
+**Honest note:** `dist/` is 100% static with no server-side logic, so it can be
+dropped onto any static host (GitHub Pages, Netlify, Cloudflare Pages…) — the
+SPA fallback is the only host-specific thing to configure.
+
+## Roadmap
+
+- [x] v1.0.0 — live playground, 7 scenarios, inspector, charts, insights
+- [ ] More LB strategies (P2C, latency-based)
+- [ ] Circuit-breaker scenario
+- [ ] Shareable scenario URLs / saveable layouts
+- [ ] Export the topology as an image
+
+## Support
+
+Built by [@dsk-dev-ai](https://github.com/dsk-dev-ai). If DistrLab saves you an
+hour of debugging your own systems — sponsor it:
+
+https://github.com/sponsors/dsk-dev-ai
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
