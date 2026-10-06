@@ -1,0 +1,12 @@
+services:
+  - type: static
+    name: distrlab
+    runtime: static
+    repo: https://github.com/dsk-dev-ai/distrlab
+    branch: main
+    buildCommand: npm install && npm run build
+    publishDir: dist
+    pullRequestPreviewsEnabled: false
+    envVars:
+      - key: NODE_VERSION
+        value: "22"

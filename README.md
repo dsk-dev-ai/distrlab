@@ -8,6 +8,14 @@ timed out. You flip switches (single-flight, health checks, load-balancing
 strategy, queue limits, …) and watch latency, throughput, errors and queue depth
 react — then read the plain-language explanation of *why*.
 
+![healthy playground](media/distrlab-playground.png)
+
+![cache stampede: expired cache without single-flight melts down the catalog service](media/distrlab-stampede.png)
+
+![the same expiry with single-flight on: waiters coalesce, the catalog stays idle](media/distrlab-coalesced.png)
+
+![Demo](media/distrlab-demo.gif)
+
 **Free-tier by design.** No backend, no LLM, no paid API, no tracking. Everything
 runs inside a Web Worker on a static page — works offline, deployable to any
 static host (Cloudflare Pages, GitHub Pages, Netlify…).
