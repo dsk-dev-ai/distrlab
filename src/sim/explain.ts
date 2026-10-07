@@ -93,6 +93,19 @@ export function explain(snap: Snapshot, sc: Scenario): Insight[] {
       text: `Health checks marked ${n.def.label} out of rotation — recent error rate too high to trust.`,
     });
 
+  for (const n of rows.filter((x) => x.def.kind === "breaker")) {
+    if (n.s?.circuit === "open")
+      out.push({
+        tone: "bad",
+        text: `${n.def.label} is OPEN — the dependency is failing and every request now gets an instant 503 instead of a slow timeout.`,
+      });
+    else if (n.s?.circuit === "half-open")
+      out.push({
+        tone: "warn",
+        text: `${n.def.label} is half-open: a trickle of probes is testing the dependency, ready to close on success or re-open on failure.`,
+      });
+  }
+
   if (t.throttled > 0)
     out.push({
       tone: "info",

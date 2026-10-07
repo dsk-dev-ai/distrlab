@@ -10,7 +10,7 @@ watch latency, throughput, errors and queue depth react — then read the
 plain-language explanation of *why*.
 
 [Try it live](https://distrlab.onrender.com) ·
-[Release v1.0.0](https://github.com/dsk-dev-ai/distrlab/releases/tag/v1.0.0) ·
+[Releases](https://github.com/dsk-dev-ai/distrlab/releases) ·
 [Report a bug](https://github.com/dsk-dev-ai/distrlab/issues)
 
 ![live](https://img.shields.io/website?url=https%3A%2F%2Fdistrlab.onrender.com&label=live%20on%20render&color=success)
@@ -21,9 +21,10 @@ plain-language explanation of *why*.
 ![typescript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
 ![vite](https://img.shields.io/badge/Vite-646CFF?logo=vite&logoColor=white)
 
-**Status:** v1.0.0 — live on Render. 100% in the browser: no backend, no LLM,
-no paid API, no tracking. Everything runs inside a Web Worker on a static page —
-works offline, deployable to any static host.
+**Status:** v1.1.0 — live on Render, in review as a PR. Circuit breaker + two smarter
+LB strategies join the seven original scenarios. 100% in the browser: no backend, no LLM,
+no paid API, no tracking. Everything runs inside a Web Worker on a static page — works
+offline, deployable to any static host.
 
 </div>
 
@@ -32,9 +33,10 @@ works offline, deployable to any static host.
 | Pain point | DistrLab solves it |
 |---|---|
 | Static diagrams that you just nod along to | A **live topology you can actually break** — every toggle moves real latency, error and throughput numbers |
-| Tutorials that only show the happy path | **Seven failure scenarios**: stampede, backpressure, throttling, LB skew, partition, stale replicas |
+| Tutorials that only show the happy path | **Eight failure scenarios**: stampede, backpressure, throttling, LB skew, partition, stale replicas, a tripping circuit breaker |
 | "I get it" fading an hour later | **Hands-on memory** — break it, watch it recover, then re-check yourself |
 | Trusting that health checks / least-inflight work | **See requests reroute around a dead instance in real time** |
+| Taking load balancers on faith | **Round-robin vs random vs P2C vs least-latency** head-to-head against a weak instance |
 | Paid doorstopper simulators | Free, offline, no signup — a Svelte 5 + Canvas + Web Worker static page |
 
 ## Contents
@@ -78,16 +80,17 @@ A real run, compressed — expire the cache, watch it recover:
 | 2 | Cache stampede | Turning off single-flight near a TTL expiry herds every request at the origin |
 | 3 | Queue backpressure | Shallow queues shed fast; deep queues trade errors for latency (both hurt) |
 | 4 | Rate limiting | A token bucket in front of the service protects it, at the cost of 429s |
-| 5 | Load balancer strategies | Round-robin vs random vs least-inflight vs sticky under skew and failure |
+| 5 | Load balancer strategies | Round-robin vs random vs least-inflight vs sticky vs P2C vs least-latency under skew and failure |
 | 6 | Network partition | A cut link stops traffic; health checks + least-inflight route around it |
 | 7 | Replication lag | Reading a replica is fast and stale; tune the lag and watch stale reads |
+| 8 | Circuit breaker | A breaker in front of a flaky dependency: slow timeouts → instant 503s, then probe back to health |
 
 ## Controls
 
-- **Buttons in the header** switch scenarios, reset, pause, and set sim speed (space / `R` / `1`–`7` keyboard shortcuts).
+- **Buttons in the header** switch scenarios, reset, pause, and set sim speed (space / `R` / `1`–`8` keyboard shortcuts).
 - **The graph** is the live topology — click a node to open the Inspector, drag to rearrange, scroll to zoom, drag the background to pan.
-- **Knobs** in the sidebar change arrival rate, capacities, queue limits, TTL, single-flight, LB strategy, health checks, timeouts, replica lag, and fault windows.
-- **Inspector** can crash / restart a service, expire a cache, slow an instance, and partition/repair links.
+- **Knobs** in the sidebar change arrival rate, capacities, queue limits, TTL, single-flight, LB strategy, health checks, timeouts, replica lag, fault windows, and the breaker's trip threshold / cooldown / probe limit.
+- **Inspector** can crash / restart a service, expire a cache, slow an instance, partition/repair links, and trip or reset the circuit breaker by hand.
 - **Charts** (bottom) track p95, throughput, error rate, queue depth, and cache hit ratio over time; the **insights panel** explains what's currently wrong.
 
 ## How the simulation works
@@ -100,8 +103,9 @@ drawn from a log-normal distribution, and eventually complete or fail with
 
 - **Services** have capacity (rps) and queue limits; over their limit they reject with 503.
 - **Client timeouts** kill in-flight requests; a request that dies mid-route still credits the target's error slice.
-- **Health checks** use an error-rate EMA with probe fallback; unhealthy nodes are pulled from LB rotation and get probed once per second, so recovery is automatic.
-- **Least-inflight** counts what's *actually* waiting — including requests still travelling across the network, so a silent hole (partition) repels traffic.
+- **Health checks** use an error-rate EMA with probe fallback; unhealthy nodes are pulled from LB rotation and get probed once per second, and their health recovers (decays) once the outage ends — so recovery is automatic.
+- **Least-inflight** counts what's *actually* waiting — including requests still travelling across the network, so a silent hole (partition) repels traffic. **P2C** picks the less loaded of two random candidates; **least-latency** prefers the node with the lowest response-time EMA.
+- **Circuit breaker** trips OPEN above a recent error-rate threshold, fast-fails with 503, goes half-open after a cooldown, and closes once its limited probes succeed.
 - **Cache** write-misses coalesce when single-flight is on; expiry refills the window.
 - **Rate limiters** are token buckets refilled per tick.
 - **Replica reads** are always served, but carry the configured staleness lag.
@@ -110,10 +114,11 @@ drawn from a log-normal distribution, and eventually complete or fail with
 
 ```bash
 bun install
-bun run dev        # vite dev server
-bun run check      # svelte-check (types + a11y)
-bun run build      # production build → dist/
-bun run preview    # serve the build locally
+bun test         # headless engine tests (no browser needed)
+bun run dev      # vite dev server
+bun run check    # svelte-check (types + a11y)
+bun run build    # production build → dist/
+bun run preview  # serve the build locally
 ```
 
 The engine is framework-agnostic (`src/sim/engine.ts`) and runs headless in a
@@ -142,10 +147,12 @@ SPA fallback is the only host-specific thing to configure.
 ## Roadmap
 
 - [x] v1.0.0 — live playground, 7 scenarios, inspector, charts, insights
-- [ ] More LB strategies (P2C, latency-based)
-- [ ] Circuit-breaker scenario
-- [ ] Shareable scenario URLs / saveable layouts
-- [ ] Export the topology as an image
+- [x] v1.1.0 — circuit breaker + scenario, P2C and least-latency LB strategies, engine test suite
+- [ ] v1.2.0 — chaos & retries: backoff with jitter, fault scheduler, per-request work log
+- [ ] v1.3.0 — share & export: scenario URLs, layouts, PNG/GIF export
+- [ ] v2.0.0 — beyond the single request path: sagas, quorum/consensus, multi-region, leader election
+
+See [ROADMAP.md](ROADMAP.md) for the full version-wise plan.
 
 ## Support
 

@@ -2,12 +2,21 @@ export type NodeKind =
   | "client"
   | "lb"
   | "ratelimiter"
+  | "breaker"
   | "cache"
   | "service"
   | "queue"
   | "db";
 
-export type LbStrategy = "round-robin" | "random" | "least-inflight" | "sticky";
+export type LbStrategy =
+  | "round-robin"
+  | "random"
+  | "least-inflight"
+  | "sticky"
+  | "least-latency"
+  | "p2c";
+
+export type CircuitState = "closed" | "open" | "half-open";
 
 export interface NodeDef {
   id: string;
@@ -33,6 +42,16 @@ export interface NodeDef {
   refillRps?: number;
   /** ratelimiter: bucket depth */
   bucketSize?: number;
+  /** breaker: enabled/disabled (disabled = transparent pass-through) */
+  enabled?: boolean;
+  /** breaker: error-rate threshold that trips the circuit open (0..1) */
+  tripsAt?: number;
+  /** breaker: time spent OPEN before the first half-open probe */
+  cooldownMs?: number;
+  /** breaker: request limit allowed through while half-open */
+  probeLimit?: number;
+  /** breaker: rolling window (number of calls) the error rate is measured over */
+  cbWindow?: number;
   /** db: replica lag in ms (0 = reads served by the primary) */
   replicaLagMs?: number;
   /** db: fraction of traffic that writes */
@@ -121,6 +140,8 @@ export interface NodeStats {
   stalePct: number;
   /** true when a health check marks it unusable */
   unhealthy: boolean;
+  /** breaker only: circuit state */
+  circuit?: CircuitState;
 }
 
 export interface LinkStats {
@@ -172,7 +193,9 @@ export type FaultAction =
   | { kind: "restart"; nodeId: string }
   | { kind: "partition"; linkId: string; on: boolean }
   | { kind: "expire"; nodeId: string }
-  | { kind: "slow"; nodeId: string; ms: number };
+  | { kind: "slow"; nodeId: string; ms: number }
+  | { kind: "breaker-open"; nodeId: string }
+  | { kind: "breaker-reset"; nodeId: string };
 
 export type TransportAction =
   | { kind: "togglePause" }

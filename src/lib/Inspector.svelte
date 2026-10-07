@@ -33,6 +33,7 @@
     ];
     if (stats.rejected > 0) list.push({ k: "rejected 503", v: stats.rejected.toLocaleString() });
     if (stats.throttled > 0) list.push({ k: "shed 429", v: stats.throttled.toLocaleString() });
+    if (def.kind === "breaker") list.push({ k: "circuit", v: stats.circuit ?? "closed" });
     if (def.kind === "cache" && stats.hitRatio !== null)
       list.push({ k: "hit ratio", v: `${Math.round(stats.hitRatio * 100)}%` });
     if (def.kind === "db" && (def.replicaLagMs ?? 0) > 0)
@@ -97,6 +98,21 @@
       <button type="button" onclick={() => onfault({ kind: "expire", nodeId: def.id })}>
         Expire cache now
       </button>
+    {/if}
+    {#if def.kind === "breaker"}
+      {#if stats.circuit === "open" || stats.circuit === "half-open"}
+        <button type="button" onclick={() => onfault({ kind: "breaker-reset", nodeId: def.id })}>
+          Reset breaker
+        </button>
+      {:else}
+        <button
+          type="button"
+          class="danger"
+          onclick={() => onfault({ kind: "breaker-open", nodeId: def.id })}
+        >
+          Trip breaker
+        </button>
+      {/if}
     {/if}
   </div>
 

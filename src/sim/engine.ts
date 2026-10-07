@@ -1,4 +1,5 @@
 import type {
+  CircuitState,
   FaultAction,
   GlobalSettings,
   KnobValue,
@@ -36,6 +37,8 @@ interface Req {
   warm?: boolean;
   hold?: boolean;
   cacheIdx?: number;
+  /** breaker that let this request through — its outcome is judged downstream */
+  breakerIdx?: number;
 }
 
 interface RtNode {
@@ -66,6 +69,20 @@ interface RtNode {
   unhealthy: boolean;
   healthEma: number;
   probeAt: number;
+  /** EMA of per-request response time — feeds least-latency routing */
+  rtEma: number;
+  /** breaker: current circuit state */
+  circuit: CircuitState;
+  /** breaker: when the circuit flipped OPEN (for cooldown) */
+  openAt: number;
+  /** breaker: requests admitted while half-open right now */
+  probeInFlight: number;
+  /** breaker: successful probes since half-open began */
+  probeOk: number;
+  /** breaker: rolling ring of call outcomes (1 = failed) */
+  cbHist: number[];
+  cbHead: number;
+  cbCount: number;
 }
 
 interface RtLink {
@@ -201,6 +218,14 @@ export class Engine {
         unhealthy: false,
         healthEma: 0,
         probeAt: 0,
+        rtEma: (def.baseLatencyMs ?? 0) + 10,
+        circuit: "closed",
+        openAt: 0,
+        probeInFlight: 0,
+        probeOk: 0,
+        cbHist: new Array(def.cbWindow ?? 120).fill(0),
+        cbHead: 0,
+        cbCount: 0,
       } satisfies RtNode;
     });
     this.arriving = new Array<number>(this.nodes.length).fill(0);
@@ -271,6 +296,20 @@ export class Engine {
       n.nextExpireAt = Number.POSITIVE_INFINITY;
     } else if (action.kind === "slow") {
       n.def.faultLatencyMs = action.ms;
+    } else if (action.kind === "breaker-open") {
+      if (n.def.kind === "breaker") {
+        n.circuit = "open";
+        n.openAt = this.t;
+        n.probeInFlight = 0;
+        n.probeOk = 0;
+      }
+    } else if (action.kind === "breaker-reset") {
+      if (n.def.kind === "breaker") {
+        n.circuit = "closed";
+        n.probeInFlight = 0;
+        n.probeOk = 0;
+        this.cbClear(n);
+      }
     }
   }
 
@@ -321,6 +360,25 @@ export class Engine {
         if (n.qhead >= n.q.length) {
           n.q = [];
           n.qhead = 0;
+        }
+      }
+
+      if (n.def.kind === "breaker" && n.def.enabled !== false) {
+        const cap = n.def.cbWindow ?? 120;
+        const minCalls = Math.min(30, Math.max(4, Math.floor(cap / 2)));
+        if (n.circuit === "closed" && n.cbCount >= minCalls) {
+          const rate = this.cbErrRate(n);
+          if (rate >= (n.def.tripsAt ?? 0.5)) {
+            n.circuit = "open";
+            n.openAt = t;
+            n.probeInFlight = 0;
+            n.probeOk = 0;
+            this.cbClear(n);
+          }
+        } else if (n.circuit === "open" && t - n.openAt >= (n.def.cooldownMs ?? 5000)) {
+          n.circuit = "half-open";
+          n.probeInFlight = 0;
+          n.probeOk = 0;
         }
       }
 
@@ -462,6 +520,20 @@ export class Engine {
         n.tokens -= 1;
         return this.forwardFrom(n, r, i);
       }
+      case "breaker": {
+        if (n.def.enabled === false) return this.forwardFrom(n, r, i);
+        if (n.circuit === "open") {
+          n.rejected++;
+          return this.fail("rejected", r, i);
+        }
+        if (n.circuit === "half-open" && n.probeInFlight >= (n.def.probeLimit ?? 2)) {
+          n.rejected++;
+          return this.fail("rejected", r, i);
+        }
+        if (n.circuit === "half-open") n.probeInFlight++;
+        r.breakerIdx = i;
+        return this.forwardFrom(n, r, i);
+      }
       case "cache": {
         if (n.refillUntil > 0 && this.t >= n.refillUntil && n.upstream === 0) {
           n.refillUntil = 0;
@@ -557,13 +629,30 @@ export class Engine {
     let chosen: number;
     if (strat === "random") chosen = candidates[Math.floor(Math.random() * candidates.length)];
     else if (strat === "sticky") chosen = candidates[r.session % candidates.length];
-    else if (strat === "least-inflight") {
+    else if (strat === "least-inflight" || strat === "p2c") {
+      if (strat === "p2c" && candidates.length > 1) {
+        const a = candidates[Math.floor(Math.random() * candidates.length)];
+        let b = candidates[Math.floor(Math.random() * candidates.length)];
+        while (b === a) b = candidates[Math.floor(Math.random() * candidates.length)];
+        chosen = this.inflightOf(a) <= this.inflightOf(b) ? a : b;
+      } else {
+        chosen = candidates[0];
+        let bestLoad = Infinity;
+        for (const idx of candidates) {
+          const load = this.inflightOf(idx);
+          if (load < bestLoad) {
+            bestLoad = load;
+            chosen = idx;
+          }
+        }
+      }
+    } else if (strat === "least-latency") {
       chosen = candidates[0];
-      let bestLoad = Infinity;
+      let best = Infinity;
       for (const idx of candidates) {
-        const load = this.inflightOf(idx);
-        if (load < bestLoad) {
-          bestLoad = load;
+        const rt = this.nodes[idx].rtEma;
+        if (rt < best) {
+          best = rt;
           chosen = idx;
         }
       }
@@ -582,6 +671,8 @@ export class Engine {
     n.doneWin++;
     this.win.ok++;
     this.pushLat(this.t - r.born);
+    this.updateRt(n, this.t - r.born);
+    if (r.breakerIdx !== undefined) this.cbRecord(this.nodes[r.breakerIdx], false);
     if (n.def.kind === "db") {
       const isWrite = Math.random() < (n.def.writeFraction ?? 0);
       if (!isWrite) {
@@ -634,12 +725,66 @@ export class Engine {
     }
   }
 
+  private cbClear(n: RtNode): void {
+    n.cbHist.fill(0);
+    n.cbHead = 0;
+    n.cbCount = 0;
+  }
+
+  private cbPush(n: RtNode, err: boolean): void {
+    const cap = n.def.cbWindow ?? 120;
+    if (n.cbHist.length !== cap) {
+      n.cbHist = new Array(cap).fill(0);
+      n.cbHead = 0;
+      n.cbCount = 0;
+    }
+    n.cbHist[n.cbHead] = err ? 1 : 0;
+    n.cbHead = (n.cbHead + 1) % cap;
+    n.cbCount = Math.min(n.cbCount + 1, cap);
+  }
+
+  private cbErrRate(n: RtNode): number {
+    const cap = n.def.cbWindow ?? 120;
+    if (n.cbCount === 0) return 0;
+    let s = 0;
+    for (let k = 0; k < n.cbCount; k++) s += n.cbHist[(n.cbHead - 1 - k + cap) % cap];
+    return s / n.cbCount;
+  }
+
+  private cbRecord(br: RtNode, err: boolean): void {
+    this.cbPush(br, err);
+    if (br.circuit === "half-open") {
+      br.probeInFlight = Math.max(0, br.probeInFlight - 1);
+      if (err) {
+        br.circuit = "open";
+        br.openAt = this.t;
+        br.probeInFlight = 0;
+        br.probeOk = 0;
+        this.cbClear(br);
+      } else {
+        br.probeOk++;
+        if (br.probeOk >= (br.def.probeLimit ?? 2)) {
+          br.circuit = "closed";
+          br.probeInFlight = 0;
+          br.probeOk = 0;
+          this.cbClear(br);
+        }
+      }
+    }
+  }
+
+  private updateRt(n: RtNode, ms: number): void {
+    const v = Math.min(ms, 20_000);
+    n.rtEma = n.rtEma * 0.7 + v * 0.3;
+  }
+
   private fail(kind: ErrKind, r: Req, nodeIdx: number): void {
     if (nodeIdx >= 0) {
       const n = this.nodes[nodeIdx];
       if (n) {
         n.errors++;
         n.errWin++;
+        this.updateRt(n, this.t - r.born);
       }
     }
     if (kind === "timeout") this.totals.timeouts++;
@@ -648,6 +793,7 @@ export class Engine {
     else if (kind === "conn") this.totals.connErrors++;
     this.win[kind]++;
     this.pushLat(this.t - r.born);
+    if (r.breakerIdx !== undefined) this.cbRecord(this.nodes[r.breakerIdx], true);
     if (r.warm && r.cacheIdx !== undefined) {
       const c = this.nodes[r.cacheIdx];
       c.upstream = 0;
@@ -695,11 +841,10 @@ export class Engine {
           ? Math.min(1.5, n.startWin / (n.def.capacityRps * sec))
           : 0;
       const winTotal = n.doneWin + n.errWin;
-      if (winTotal > 0) {
-        const rate = n.errWin / winTotal;
-        const a = rate > 0 ? Math.min(0.6, 0.15 + winTotal / 20) : 0.4;
-        n.healthEma = n.healthEma * (1 - a) + rate * a;
-      }
+      const rate = winTotal > 0 ? n.errWin / winTotal : 0;
+      const a =
+        rate > 0 ? Math.min(0.6, 0.15 + winTotal / 20) : winTotal > 0 ? 0.4 : 0.03;
+      n.healthEma = n.healthEma * (1 - a) + rate * a;
       n.unhealthy = !n.def.crashed && n.def.kind !== "client" && n.healthEma > 0.5;
       n.doneWin = 0;
       n.errWin = 0;
@@ -767,6 +912,7 @@ export class Engine {
         refill: n.refillUntil > this.t,
         stalePct: n.stalePct,
         unhealthy: n.unhealthy,
+        circuit: n.def.kind === "breaker" ? n.circuit : undefined,
       };
     }
     const linkStats: Record<string, LinkStats> = {};

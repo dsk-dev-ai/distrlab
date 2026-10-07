@@ -71,7 +71,7 @@
         transport({ kind: "togglePause" });
       } else if (e.key === "r" || e.key === "R") {
         transport({ kind: "reset" });
-      } else if (e.key >= "1" && e.key <= "7") {
+      } else if (e.key >= "1" && e.key <= "8") {
         const sc = SCENARIOS[Number(e.key) - 1];
         if (sc) loadScenario(sc.id);
       }

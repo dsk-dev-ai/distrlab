@@ -163,6 +163,11 @@
         ];
       case "ratelimiter":
         return [`${s?.rps ?? 0} rps through`, `${s?.throttled ?? 0} shed (429)`];
+      case "breaker":
+        return [
+          `${s?.rps ?? 0} rps · ${s?.circuit ?? "closed"}`,
+          `${s?.rejected ?? 0} fast-fail 503`,
+        ];
       case "cache":
         return [
           s?.refill
@@ -346,16 +351,22 @@
       ctx.fillStyle = isSel ? "#131d27" : isHover ? "#121a23" : "#0f161e";
       ctx.fill();
       ctx.shadowBlur = 0;
-      ctx.lineWidth = isSel ? 2.4 : 1.4;
-      ctx.strokeStyle = d.crashed
-        ? "#e05252"
-        : s?.unhealthy
-          ? "#f59e0b"
-          : queueFull
+      const border =
+        s?.circuit === "open"
+          ? "#ef4444"
+          : d.crashed
             ? "#e05252"
-            : hot
-              ? "#d9a326"
-              : kindColor;
+            : s?.circuit === "half-open"
+              ? "#f59e0b"
+              : s?.unhealthy
+                ? "#f59e0b"
+                : queueFull
+                  ? "#e05252"
+                  : hot
+                    ? "#d9a326"
+                    : kindColor;
+      ctx.lineWidth = isSel ? 2.4 : 1.4;
+      ctx.strokeStyle = border;
       ctx.globalAlpha = isSel || isHover ? 1 : 0.85;
       ctx.stroke();
       ctx.globalAlpha = 1;
@@ -381,6 +392,8 @@
       }
 
       if (d.crashed) badge(ctx, x + W - 12, y + 16, "CRASHED", "#f87171");
+      else if (s?.circuit === "open") badge(ctx, x + W - 12, y + 16, "OPEN", "#ef4444");
+      else if (s?.circuit === "half-open") badge(ctx, x + W - 12, y + 16, "HALF-OPEN", "#f59e0b");
       else if (s?.unhealthy) badge(ctx, x + W - 12, y + 16, "UNHEALTHY", "#f59e0b");
       else if (s?.refill) badge(ctx, x + W - 12, y + 16, "COLD", "#fbbf24");
 
@@ -454,6 +467,7 @@
     client: "#7dd3fc",
     lb: "#c4b5fd",
     ratelimiter: "#fb7185",
+    breaker: "#fb923c",
     cache: "#fbbf24",
     service: "#34d399",
     queue: "#f472b6",
